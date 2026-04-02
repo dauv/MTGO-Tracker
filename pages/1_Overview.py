@@ -19,33 +19,62 @@ st.title("📊 Overview")
 if filters is None:
     st.stop()
 
+conn   = filters["conn"]
+hero   = filters["hero"]
+
 df = db.get_matches(
-    filters["conn"],
-    filters["hero"],
+    conn, hero,
     start_date=filters["start_date"],
     end_date=filters["end_date"],
     formats=filters["formats"],
     match_types=filters["match_types"],
+    decks=filters["decks"],
 )
 
 if df.empty:
     st.info("No matches found for the current filters. Try importing logs or widening the date range.")
     st.stop()
 
+gdf = db.get_games(
+    conn, hero,
+    start_date=filters["start_date"],
+    end_date=filters["end_date"],
+    formats=filters["formats"],
+    match_types=filters["match_types"],
+    decks=filters["decks"],
+)
+
 # ---------------------------------------------------------------------------
 # Key metrics
 # ---------------------------------------------------------------------------
 
-total = len(df)
-wins = int(df["Won"].sum())
+total  = len(df)
+wins   = int(df["Won"].sum())
 losses = total - wins
-winrate = wins / total * 100
+mwr    = wins / total * 100
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Matches", total)
-col2.metric("Wins", wins)
-col3.metric("Losses", losses)
-col4.metric("Win Rate", f"{winrate:.1f}%")
+# Game win %
+decided   = gdf[gdf["Decided"]] if not gdf.empty else gdf
+g_total   = len(decided)
+g_wins    = int(decided["GameWon"].sum()) if g_total else 0
+gwr       = g_wins / g_total * 100 if g_total else None
+
+# Pre / post board
+pre  = decided[decided["Preboard"]]  if not decided.empty else decided
+post = decided[~decided["Preboard"]] if not decided.empty else decided
+
+pre_wr  = int(pre["GameWon"].sum())  / len(pre)  * 100 if len(pre)  else None
+post_wr = int(post["GameWon"].sum()) / len(post) * 100 if len(post) else None
+
+col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1.metric("Matches",        total)
+col2.metric("Record",         f"{wins}W – {losses}L")
+col3.metric("Match Win %",    f"{mwr:.1f}%")
+col4.metric("Game Win %",     f"{gwr:.1f}%" if gwr is not None else "—")
+col5.metric("Preboard GW%",   f"{pre_wr:.1f}%"  if pre_wr  is not None else "—",
+            help="Win % in game 1 of each match (before sideboarding)")
+col6.metric("Postboard GW%",  f"{post_wr:.1f}%" if post_wr is not None else "—",
+            help="Win % in games 2+ of each match (after sideboarding)")
 
 st.divider()
 

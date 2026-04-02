@@ -25,9 +25,10 @@ hero = filters["hero"]
 st.markdown(
     """
     Point to the folder containing your `Match_GameLog_*.dat` files.
-    The default MTGO log location is usually:
+    MTGO typically stores log files in one of these locations:
 
-    `C:\\Users\\<you>\\AppData\\Local\\Wizards of the Coast\\Magic Online\\Logs`
+    - `C:\\Users\\[User]\\AppData\\Local\\Apps\\2.0`
+    - `C:\\Users\\[User]\\Documents`
 
     Already-imported files are skipped automatically.
     """
@@ -40,22 +41,21 @@ st.markdown(
 log_folder = st.text_input(
     "Log folder path",
     value=st.session_state.config.get("log_folder", ""),
-    help="The folder MTGO writes its Match_GameLog_*.dat files into.",
+    help="MTGO typically stores Match_GameLog_*.dat files in AppData\\Local\\Apps\\2.0 or Documents.",
 )
 
 if st.button("Scan for new logs"):
     if not log_folder or not os.path.exists(log_folder):
         st.error("Folder not found. Check the path.")
     else:
-        all_files = [
-            f for f in os.listdir(log_folder)
-            if f.startswith("Match_GameLog_") and f.endswith(".dat")
-        ]
-        parsed = db.get_parsed_files(conn)
-        new_files = [f for f in all_files if f not in parsed]
+        with st.spinner("Scanning (searching subfolders)…"):
+            all_files = list(Path(log_folder).rglob("Match_GameLog_*.dat"))
 
+        parsed = db.get_parsed_files(conn)
+        new_files = [p for p in all_files if p.name not in parsed]
+
+        # Store full Path objects so importer always has the right location
         st.session_state["pending_files"] = new_files
-        st.session_state["pending_folder"] = log_folder
 
         # Persist the folder
         st.session_state.config["log_folder"] = log_folder
@@ -65,7 +65,7 @@ if st.button("Scan for new logs"):
         if new_files:
             st.success(f"Found **{len(new_files)}** new files out of {len(all_files)} total.")
         else:
-            st.info(f"All {len(all_files)} files are already imported. Nothing to do.")
+            st.info(f"All {len(all_files)} files already imported. Nothing to do.")
 
 # ---------------------------------------------------------------------------
 # Import
@@ -74,12 +74,11 @@ if st.button("Scan for new logs"):
 pending = st.session_state.get("pending_files", [])
 
 if pending:
-    folder = st.session_state.get("pending_folder", log_folder)
     st.subheader(f"{len(pending)} files ready to import")
 
     with st.expander("Preview file list"):
-        for f in pending[:50]:
-            st.text(f)
+        for p in pending[:50]:
+            st.text(str(p))
         if len(pending) > 50:
             st.caption(f"… and {len(pending) - 50} more")
 
@@ -89,18 +88,21 @@ if pending:
 
         successes, skipped, errors = 0, 0, []
 
-        for i, filename in enumerate(pending):
-            filepath = os.path.join(folder, filename)
+        for i, filepath in enumerate(pending):
             progress_bar.progress((i + 1) / len(pending))
-            status_text.text(f"Importing {i+1}/{len(pending)}: {filename}")
+            status_text.text(f"Importing {i+1}/{len(pending)}: {filepath.name}")
 
-            ok, msg = importer.import_log_file(conn, filepath, hero)
+            ok, msg = importer.import_log_file(
+                conn, str(filepath), hero,
+                default_deck=st.session_state.config.get("default_deck", ""),
+                default_format=st.session_state.config.get("default_format", ""),
+            )
             if ok:
                 successes += 1
             elif msg == "Already imported":
                 skipped += 1
             else:
-                errors.append(f"{filename}: {msg}")
+                errors.append(f"{filepath.name}: {msg}")
 
         progress_bar.empty()
         status_text.empty()

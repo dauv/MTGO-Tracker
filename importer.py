@@ -68,9 +68,13 @@ def _invert_game(game_data):
 # Public import function
 # ---------------------------------------------------------------------------
 
-def import_log_file(conn, filepath, hero):
+def import_log_file(conn, filepath, hero, default_deck="", default_format=""):
     """
     Parse a single Match_GameLog file and insert it into the DB.
+
+    default_deck / default_format are written into the record when the parsed
+    value would otherwise be "NA" or empty.  This means the default only
+    applies to newly-imported matches, never retroactively.
 
     Returns (success: bool, message: str).
     """
@@ -115,6 +119,18 @@ def import_log_file(conn, filepath, hero):
     if p2_name == hero:
         match_data = _invert_match(match_data)
         game_data = [_invert_game(g) for g in game_data]
+
+    # Apply defaults for deck / format when parsed value is empty / NA
+    mh = modo.header("Matches")
+    match_data = list(match_data)
+    if default_deck:
+        idx = mh.index("P1_Subarch")
+        if match_data[idx] in ("NA", "", None):
+            match_data[idx] = default_deck
+    if default_format:
+        idx = mh.index("Format")
+        if match_data[idx] in ("NA", "", None):
+            match_data[idx] = default_format
 
     # Insert into DB
     try:

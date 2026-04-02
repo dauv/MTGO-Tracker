@@ -37,9 +37,54 @@ def init_db(conn):
         );
     """)
     conn.commit()
+    # Migrations: add columns that didn't exist in older versions
+    for migration in [
+        "ALTER TABLE Matches ADD COLUMN Notes TEXT DEFAULT ''",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except Exception:
+            pass  # column already exists
 
 
-def get_matches(conn, hero, start_date=None, end_date=None, formats=None, match_types=None):
+def get_games(conn, hero, start_date=None, end_date=None, formats=None, match_types=None, decks=None):
+    """Return games joined to matches, filtered the same way as get_matches."""
+    query = """
+        SELECT g.Match_ID, g.Game_Num, g.Game_Winner, g.On_Play, g.On_Draw,
+               g.P1_Mulls, g.P2_Mulls, g.Turns,
+               m.Format, m.Match_Type, m.Date, m.P1_Subarch, m.P2_Subarch
+        FROM Games g
+        JOIN Matches m ON g.Match_ID = m.Match_ID
+        WHERE m.P1 = ?
+    """
+    params = [hero]
+    if start_date:
+        query += " AND m.Date >= ?"
+        params.append(start_date.strftime("%Y-%m-%d") + "-00:00")
+    if end_date:
+        query += " AND m.Date <= ?"
+        params.append(end_date.strftime("%Y-%m-%d") + "-23:59")
+    if formats:
+        query += f" AND m.Format IN ({','.join('?'*len(formats))})"
+        params.extend(formats)
+    if match_types:
+        query += f" AND m.Match_Type IN ({','.join('?'*len(match_types))})"
+        params.extend(match_types)
+    if decks:
+        query += f" AND m.P1_Subarch IN ({','.join('?'*len(decks))})"
+        params.extend(decks)
+
+    df = pd.read_sql_query(query, conn, params=params)
+    if not df.empty:
+        # Exclude NA results (timeouts/DCs) from win calculations
+        df["Decided"] = df["Game_Winner"].isin(["P1", "P2"])
+        df["GameWon"] = (df["Game_Winner"] == "P1").astype(int)
+        df["Preboard"] = (df["Game_Num"] == 1)
+    return df
+
+
+def get_matches(conn, hero, start_date=None, end_date=None, formats=None, match_types=None, decks=None):
     """Return matches from the hero's perspective (WHERE P1 = hero)."""
     query = "SELECT * FROM Matches WHERE P1 = ?"
     params = [hero]
@@ -56,6 +101,9 @@ def get_matches(conn, hero, start_date=None, end_date=None, formats=None, match_
     if match_types:
         query += f" AND Match_Type IN ({','.join('?'*len(match_types))})"
         params.extend(match_types)
+    if decks:
+        query += f" AND P1_Subarch IN ({','.join('?'*len(decks))})"
+        params.extend(decks)
 
     query += " ORDER BY Date DESC"
 
@@ -63,7 +111,7 @@ def get_matches(conn, hero, start_date=None, end_date=None, formats=None, match_
     if not df.empty:
         df["ParsedDate"] = pd.to_datetime(df["Date"], format="%Y-%m-%d-%H:%M", errors="coerce")
         df["Won"] = (df["Match_Winner"] == "P1").astype(int)
-        df["Result"] = df["Won"].map({1: "Win", 0: "Loss"})
+        df["Result"] = df["Match_Winner"].map({"P1": "Win", "P2": "Loss"}).fillna("Unknown")
     return df
 
 
@@ -87,6 +135,66 @@ def get_match_types(conn, hero):
         return df["Match_Type"].tolist()
     except Exception:
         return []
+
+
+def update_match(conn, match_id, fields: dict):
+    """Update editable fields on a single match row."""
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [match_id]
+    conn.execute(f"UPDATE Matches SET {set_clause} WHERE Match_ID = ?", vals)
+    conn.commit()
+
+
+def get_known_decks(conn, hero):
+    """Return sorted list of distinct deck names already in DB for the hero."""
+    try:
+        df = pd.read_sql_query(
+            "SELECT DISTINCT P1_Subarch FROM Matches WHERE P1=? AND P1_Subarch NOT IN ('NA','') ORDER BY P1_Subarch",
+            conn, params=[hero],
+        )
+        return df["P1_Subarch"].tolist()
+    except Exception:
+        return []
+
+
+def get_known_opp_decks(conn, hero):
+    """Return sorted list of distinct opponent deck names already in DB."""
+    try:
+        df = pd.read_sql_query(
+            "SELECT DISTINCT P2_Subarch FROM Matches WHERE P1=? AND P2_Subarch NOT IN ('NA','') ORDER BY P2_Subarch",
+            conn, params=[hero],
+        )
+        return df["P2_Subarch"].tolist()
+    except Exception:
+        return []
+
+
+def get_match_plays(conn, match_id):
+    """Return all plays for a single match, ordered by game then play number."""
+    try:
+        return pd.read_sql_query(
+            """SELECT Game_Num, Turn_Num, Casting_Player, Action, Primary_Card
+               FROM Plays
+               WHERE Match_ID = ?
+               ORDER BY Game_Num, Play_Num""",
+            conn, params=[match_id],
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_match_games(conn, match_id):
+    """Return all games for a single match, ordered by game number."""
+    try:
+        df = pd.read_sql_query(
+            "SELECT * FROM Games WHERE Match_ID = ? ORDER BY Game_Num",
+            conn, params=[match_id],
+        )
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 def get_parsed_files(conn):
